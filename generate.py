@@ -702,12 +702,12 @@ def main(args):
     logger.info(f"  Upsample LQ = {args.upsample_lq}")
 
     if args.is_img_folder:
-        lq_path = [Path(args.lq)]
+        lq_path = [Path(args.data)]
     else:
-        if Path(args.lq).is_file():
-            lq_path = [Path(args.lq)]
+        if Path(args.data).is_file():
+            lq_path = [Path(args.data)]
         else:
-            lq_path = [x for x in Path(args.lq).glob("*") if x.suffix.lower() in ['.mp4', '.avi', '.mov']]
+            lq_path = [x for x in Path(args.data).glob("*") if x.suffix.lower() in ['.mp4', '.avi', '.mov']]
             lq_path.sort()
 
     for i in tqdm(
@@ -818,7 +818,6 @@ def parse_args():
     parser.add_argument("--upsample_lq",               type=str,              default='trilinear',     choices=['nearest', 'trilinear', 'pad'], help="Temporal upsample mode for LQ: interpolate or zero-pad frames.")
     parser.add_argument("--spatial_sf",                type=int,              default=1,               help="Spatial upsampling factor.")
     parser.add_argument("--temporal_sf",               type=int,              default=4,               help="Temporal upsampling factor.")
-    parser.add_argument("--lq",                        type=str,              default=None,            help="Path to low-quality video for inference.")
     parser.add_argument("--output_dir",                type=str,              default=None,            help="Path to output directory for inference results.")
     parser.add_argument("--max_chunks",                type=int,              default=None,            help="Maximum number of chunks to process during inference.")
     parser.add_argument("--sp_size",                   type=int,              default=1,               help="Sequence parallel size.")

@@ -29,6 +29,8 @@ Xin Chen, Wenrui Dai, Chenglin Li, Junni Zou, Hongkai Xiong
 
 ## Quick Start
 
+Run the following command to perform 8x frame interpolation on `assets/demo.mp4` (requires ~20GB GPU memory):
+
 ```bash
 bash quick_start/generate.sh
 ```
