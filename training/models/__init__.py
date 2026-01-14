@@ -1,0 +1,1 @@
+from .transformer_wan import WanTransformer3DModel

@@ -1,0 +1,4 @@
+distributed_type: DEEPSPEED
+deepspeed_config:
+  deepspeed_config_file: configs/zero_stage2_config.json
+  deepspeed_multinode_launcher: standard
