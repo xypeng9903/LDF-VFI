@@ -74,7 +74,7 @@ accelerate launch $distributed_args calculate_metrics.py \
 accelerate launch $distributed_args calculate_fvd.py \
     --pred-dir $output_dir/imgs/pred \
     --gt-dir $output_dir/imgs/gt \
-    --output-json $output_dir/imgs/fid.json \
+    --output-json $output_dir/imgs/fvd.json \
     --fvd
 
 #------------------------------

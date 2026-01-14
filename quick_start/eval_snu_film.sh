@@ -70,7 +70,7 @@ accelerate launch $distributed_args calculate_metrics.py \
     --output-json $output_dir/imgs/avg_metrics.json \
     --output-csv $output_dir/imgs/per_video_metrics.csv
 
-accelerate launch $distributed_args calculate_fid.py \
+accelerate launch $distributed_args calculate_fvd.py \
     --pred-dir $output_dir/imgs/pred \
     --gt-dir $output_dir/imgs/gt \
     --output-json $output_dir/imgs/fvd.json \
