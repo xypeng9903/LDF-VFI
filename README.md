@@ -7,7 +7,7 @@ Xinyu Peng*, Han Li*, Yuyang Huang, Ziyang Zheng, Yaoming Wang, Xin Chen, Wenrui
 \* Equal contribution  
 
 <p align="center">
-  <a href='https://xypeng9903.github.io/ldf-vfi.github.io/'><img src='https://img.shields.io/badge/Project-Page-Green'></a>
+  <a href='https://xypeng9903.github.io/ldf-vfi-web/'><img src='https://img.shields.io/badge/Project-Page-Green'></a>
   &nbsp;
   <a href=''><img src="https://img.shields.io/static/v1?label=Arxiv&message=LDF-VFI(soon)&color=red&logo=arxiv"></a>
   &nbsp;
