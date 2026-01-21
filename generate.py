@@ -471,7 +471,7 @@ def main(args):
         )
 
         if args.sp_size > 1:
-            model.set_sp_state(sp_group, sp_world_size, sp_rank)
+            model.set_sp_state(sp_group, sp_world_size, sp_rank, sp_src_rank)
 
         if accelerator.is_main_process:
             print_module_summary(model, 2)

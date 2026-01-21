@@ -57,6 +57,7 @@ accelerate launch $distributed_args generate.py \
     $vae_args \
     $generate_args \
     $task_args \
+    $performance_args \
     2>&1 | tee -a $output_dir/log.txt
 
 #------------------------------

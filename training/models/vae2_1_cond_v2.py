@@ -522,10 +522,6 @@ def zero_module(module):
     return module
 
 class ConditionEncoderSymmetric(nn.Module):
-    """
-    一个与 Decoder3d 结构对称的条件编码器。
-    主要区别在于每个下采样阶段有 `num_res_blocks + 1` 个残差块。
-    """
     def __init__(self,
                  in_channels=4, # 用于 cond+msk
                  dim=128,
@@ -573,9 +569,6 @@ class ConditionEncoderSymmetric(nn.Module):
         )
 
     def forward(self, x):
-        """
-        前向传播并捕获所有19个中间特征。
-        """
         features = []
         
         h = self.conv1(x)
@@ -596,10 +589,6 @@ class ConditionEncoderSymmetric(nn.Module):
         return features
     
 class TimeRepeat(nn.Module):
-    """
-    一个简单的模块，用于将 5D 张量 (B, C, T, H, W) 
-    在时间维度 (T) 上重复指定的次数。
-    """
     def __init__(self):
         super().__init__()
 
@@ -653,11 +642,7 @@ class WanVAECondition_(nn.Module):
         )
 
     def _create_zero_convs(self, in_channels, z_dim, **model_kwargs):
-        """
-        通过干运行自动推断源和目标维度，并创建能够匹配维度的 zero_convs。
-        """
         self.clear_cache()
-        print("开始创建维度自适应的 zero_convs...")
         # 1. 推断源维度
         temp_cond_encoder = self.cond_encoder
         dummy_input = torch.zeros(1, in_channels, 1, 64, 64)
@@ -667,7 +652,6 @@ class WanVAECondition_(nn.Module):
         # source_dim = [f.shape for f in source_features]
         del temp_cond_encoder 
         del source_features
-        print(f"推断出 {len(source_shapes)} 个源特征维度。")
         # print(source_dim)
 
         # 2. 推断目标维度
@@ -698,8 +682,6 @@ class WanVAECondition_(nn.Module):
         temp_decoder.forward = original_forward
         target_dims = captured_dims
         del temp_decoder
-        print(f"推断出 {len(target_dims)} 个目标特征维度。")
-        print(target_dims)
 
 
         zero_convs = nn.ModuleList()
@@ -716,8 +698,7 @@ class WanVAECondition_(nn.Module):
                 # 必须是整数倍上采样
                 if scale_factor_h != scale_factor_w or int(scale_factor_h) != scale_factor_h:
                     raise ValueError(f"无法处理非整数倍或非对称的空间尺寸变化: {s_shape} -> {t_shape}")
-                
-                print(f"为 {s_shape} -> {t_shape} 添加上采样层, scale={int(scale_factor_h)}")
+
                 module_list.append(nn.Upsample(scale_factor=int(scale_factor_h), mode='nearest'))
             
             # 2. 匹配通道尺寸
@@ -731,7 +712,6 @@ class WanVAECondition_(nn.Module):
             
             zero_convs.append(final_module)
         self.clear_cache()
-        print(f"成功创建 {len(zero_convs)} 个维度自适应 zero_conv 层。")
         return zero_convs
 
     def forward(self, x, cond, msk):
@@ -742,12 +722,7 @@ class WanVAECondition_(nn.Module):
 
         return x_recon, mu, log_var
     
-
     def encode_cond(self, cond, msk):
-        """
-        精确追踪 cond_encoder 的执行，以捕获与 decoder 注入点完全匹配的特征。
-        这个过程是无状态的，不需要缓存。
-        """
         self.clear_cache()
         add_feats = []
         x_temp  = torch.cat([cond, msk], dim=1)
