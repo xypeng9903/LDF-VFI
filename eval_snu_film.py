@@ -1,25 +1,19 @@
 import argparse
 import logging
 import os
-import json
 from pathlib import Path
-import re
-from functools import partial
-from typing import Iterable, List, Optional, Sequence, Union
 from PIL import Image
 from concurrent.futures import ThreadPoolExecutor
 
 import datasets
 import torch
-import torch.nn.functional as F
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import set_seed
 from tqdm.auto import tqdm
 import torchvision
 import diffusers
-from torchcodec.decoders import VideoDecoder
-from einops import rearrange, repeat
+from einops import rearrange
 
 from training.util import print_module_summary
 from training.distributed import parallel_state_sp as sp_state
@@ -32,7 +26,6 @@ from training.models.precond import (
     MaskSpatialTiledEncoder3D,
 )
 from generate import (
-    sample_causal, 
     sample_skip_concat, 
     VideoFrameLazyReader
 )
@@ -160,7 +153,6 @@ def main(args):
         # Create sampler.
         sampler_map = {
             'skip-concat': sample_skip_concat,
-            'causal': sample_causal,
         }
         sample_fn = sampler_map[args.sampler](
             lq_reader,

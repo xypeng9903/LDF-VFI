@@ -1,13 +1,10 @@
 import argparse
 import logging
 import os
-import json
 from pathlib import Path
 import re
-from functools import partial
 from typing import Iterable, List, Optional, Sequence, Union
 from PIL import Image
-import math
 
 import datasets
 import torch
@@ -37,8 +34,6 @@ from training.models.precond import (
 
 logger = get_logger(__name__, log_level="INFO")
 
-#----------------------------------------------------------------------------
-# Helpers.
 
 def _natural_key(s: str):
     # Split into alpha and numeric chunks for natural sort, e.g., 1, 2, 10
@@ -179,212 +174,6 @@ def vae_decode(vae, xt, **kwargs):
         raise RuntimeError("Unsupported VAE type.")
     return pred
 
-#----------------------------------------------------------------------------
-# Samplers.
-
-def sample_euler(
-    lq_reader,  # TCHW, uint8 tensor
-    model,
-    train_num_frames=60, temporal_upsample="nearest",  # train hparams
-    spatial_sf=1, temporal_sf=4, num_steps=10, t_shift=1.0,  # sampling hparams
-    device='cuda', verbose=True,
-):        
-    # assert len(lq_reader) == train_num_frames // temporal_sf
-    assert spatial_sf == 1
-    
-    lq_H, lq_W = lq_reader[0].shape[-2], lq_reader[0].shape[-1]
-    input_T = train_num_frames
-    input_H = lq_H * spatial_sf
-    input_W = lq_W * spatial_sf
-        
-    ts = torch.linspace(1.0, 0.0, steps=num_steps + 1).numpy()
-    ts = t_shift * ts / (1 + (t_shift - 1) * ts)
-            
-    # Get lq and msk latents.
-    lq = lq_reader[:]  # TCHW uint8
-    msk = torch.zeros(input_T, dtype=torch.bool, device=device)
-    msk[::temporal_sf] = True    
-    lq = upsample_temporal(lq, msk, mode=temporal_upsample)  
-    lq = rearrange(lq, 't c h w -> 1 c t h w').to(device=device, dtype=torch.bfloat16).div(127.5).sub(1.0)
-    msk = repeat(msk, 't -> 1 1 t h w', h=lq.shape[-2], w=lq.shape[-1]).to(device=device, dtype=torch.bfloat16)
-    y = model.lq_encoder.encode(lq, for_train=True)
-    m = model.msk_encoder.encode(msk, for_train=True)
-    
-    # Flow sampling via ODE integration.
-    xt = torch.randn_like(model.vae.encode(lq, for_train=True))
-    pbar = tqdm(range(num_steps), disable=not verbose, desc="Sampling")
-    for i in pbar:
-        t = torch.tensor([ts[i]]).to(xt).expand(xt.shape[:-4]).contiguous()
-        vt = model.predict_v(xt, t, y, m)
-        xt = xt + vt * (ts[i + 1] - ts[i])
-    xt = rearrange(xt, 'b nt nh nw c t h w -> b nt c t (nh h) (nw w)')
-    
-    if isinstance(model.vae, SpatialTiledEncoder3D):
-        pred = model.vae.decode(xt)
-    elif isinstance(model.vae, SpatialTiledConditionEncoder3D):
-        decode_H = xt.shape[-2] * model.vae.spatial_compression_ratio
-        decode_W = xt.shape[-1] * model.vae.spatial_compression_ratio
-        lq = F.pad(lq, (0, decode_W - lq.shape[-1], 0, decode_H - lq.shape[-2]))
-        lq = rearrange(lq, 'b c (nt t) h w -> b nt c t h w', nt=xt.shape[1])
-        msk = msk[..., 0, 0]
-        msk = repeat(msk, 'b c t -> b c t h w', h=decode_H, w=decode_W)
-        msk = rearrange(msk, 'b c (nt t) h w -> b nt c t h w', nt=xt.shape[1])
-        pred = model.vae.decode(xt, lq, msk)
-    
-    # Convert to TCHW uint8 and crop to input size.
-    pred = pred[..., :input_H, :input_W]
-    pred_uint8 = rearrange(pred, '1 c t h w -> t c h w').add(1.0).mul(127.5).clamp(0, 255).to(torch.uint8)
-    return pred_uint8  # TCHW, uint8
-            
-
-def sample_causal(
-    lq_reader, # TCHW, uint8 tensor
-    model: Precond, train_num_frames=60, tile_min_t=20, temporal_upsample="nearest",
-    spatial_sf=1, temporal_sf=4, nT_cond=1, num_steps=10, t_cond=0.1, t_shift=1.0, # sampling hparams
-    device='cuda', weight_dtype=torch.bfloat16, verbose=True, pbar_name: str | None = None,
-):
-    """Causal autoregressive sampling (middle-tile only).
-
-    与 sample_skip_concat 对齐：每个窗口只保留中间的 latent tiles [nT_cond : nT - nT_cond]，
-    两侧边界各 nT_cond tiles 只用于上下文与自回归传递，不直接解码输出。
-
-    Output per chunk = (nT - 2 * nT_cond) * tile_min_t frames (except tail which may be shorter).
-
-    Yields:
-        (lq_uint8_chunk, pred_uint8_chunk) both TCHW uint8 for the middle region.
-    """
-    H, W = lq_reader[0].shape[1], lq_reader[0].shape[2]
-    nT = train_num_frames // tile_min_t
-    assert spatial_sf == 1, "Current implementation assumes spatial_sf == 1"
-    # assert nT_cond < nT // 2, "nT_cond must be < nT/2 to have a middle region"
-
-    # Time schedule.
-    ts = torch.linspace(1.0, 0.0, steps=num_steps + 1).numpy()
-    ts = t_shift * ts / (1 + (t_shift - 1) * ts)
-
-    # Boolean mask over HR timeline where LQ exists (after temporal upsample).
-    total_msk = torch.zeros(len(lq_reader) * temporal_sf, dtype=torch.bool)
-    total_msk[::temporal_sf] = True
-
-    # Frames produced per causal chunk (middle slice only).
-    stride_out = (nT - 2 * nT_cond) * tile_min_t
-
-    # ------------------------------------------
-    # First chunk: sample full window; decode middle part.
-    
-    input_start = 0
-    input_end = train_num_frames
-    input_lq_start = 0
-    input_lq_end = total_msk[:input_end].sum()
-
-    # Middle region time indices (HR) within the window.
-    mid_start = 0
-    mid_end = (nT - nT_cond) * tile_min_t
-    output_lq_start = total_msk[:mid_start].sum()
-    output_lq_end = total_msk[:mid_end].sum()
-    output_lq = lq_reader[output_lq_start:output_lq_end]
-
-    msk = total_msk[input_start:input_end]
-    msk = F.pad(msk, (0, train_num_frames - len(msk)))
-    lq = lq_reader[input_lq_start:input_lq_end]
-    lq = upsample_temporal(lq, msk, mode=temporal_upsample)
-    lq = rearrange(lq, 't c h w -> 1 c t h w').to(device=device, dtype=weight_dtype).div(127.5).sub(1)
-    msk_t = repeat(msk, 't -> 1 1 t h w', h=lq.shape[-2], w=lq.shape[-1]).to(device=device, dtype=weight_dtype)
-
-    y = model.lq_encoder.encode(lq, for_train=True)
-    m = model.msk_encoder.encode(msk_t, for_train=True)
-    xt = torch.randn_like(y)
-
-    desc = pbar_name or f"Causal {output_lq_start}-{output_lq_end} / {len(lq_reader)} (first chunk)"
-    pbar = tqdm(range(num_steps), disable=not verbose, desc=desc)
-    for i in pbar:
-        t = torch.tensor([ts[i]], device=device, dtype=weight_dtype).expand(xt.shape[:-4]).contiguous()
-        vt = model.predict_v(xt, t, y, m)
-        xt = xt + vt * (ts[i + 1] - ts[i])
-
-    # Slice middle region, then save AR state as the last nT_cond of the sliced middle (aligns with skip_concat).
-    xt_mid = xt[:, : nT - nT_cond]
-    x0_prev = xt_mid[:, -nT_cond:]
-
-    # Decode middle.
-    xt_dec = rearrange(xt_mid, '1 nt nh nw c t h w -> 1 nt c t (nh h) (nw w)')
-    lq_dec = lq[:, :, mid_start:mid_end]
-    msk_dec = msk_t[:, :, mid_start:mid_end]
-    pred = vae_decode(model.vae, xt_dec, lq=lq_dec, msk=msk_dec)[..., :H, :W]
-    output_pred = rearrange(pred, '1 c t h w -> t c h w').add(1).mul(127.5).clip(0, 255).byte()
-    yield output_lq, output_pred
-
-    produced_t = mid_end  # global HR frame index (exclusive) of produced output so far
-
-    # ------------------------------------------
-    # Subsequent causal chunks.
-    while produced_t < len(total_msk):
-        # Determine tail.
-        remaining = len(total_msk) - produced_t
-        is_last = remaining <= stride_out
-
-        # Window covers past boundary + prospective middle + future boundary (future boundary is noise, not decoded).
-        window_start = produced_t - nT_cond * tile_min_t
-        window_end = window_start + train_num_frames
-        window_end = min(window_end, len(total_msk))
-
-        input_lq_start = total_msk[:window_start].sum()
-        input_lq_end = total_msk[:window_end].sum()
-
-        # Middle region indices for this window.
-        mid_start = produced_t
-        mid_end = min(produced_t + stride_out, len(total_msk)) if not is_last else len(total_msk)
-        output_lq_start = total_msk[:mid_start].sum()
-        output_lq_end = total_msk[:mid_end].sum()
-        output_lq = lq_reader[output_lq_start:output_lq_end]
-
-        # Mask & LQ prep.
-        msk = total_msk[window_start:window_end]
-        msk = F.pad(msk, (0, train_num_frames - len(msk)))
-        lq = lq_reader[input_lq_start:input_lq_end]
-        lq = upsample_temporal(lq, msk, mode=temporal_upsample)
-        lq = rearrange(lq, 't c h w -> 1 c t h w').to(device=device, dtype=weight_dtype).div(127.5).sub(1)
-        msk_t = repeat(msk, 't -> 1 1 t h w', h=lq.shape[-2], w=lq.shape[-1]).to(device=device, dtype=weight_dtype)
-
-        y = model.lq_encoder.encode(lq, for_train=True)
-        m = model.msk_encoder.encode(msk_t, for_train=True)
-
-        # Latent assembly: left boundary fixed (x0_prev), middle + right boundary (noise) combined in xt_cat.
-        xt_prev = x0_prev * (1 - t_cond) + torch.randn_like(x0_prev) * t_cond
-        # We need (nT - nT_cond) tiles after concatenation with xt_prev to make full nT.
-        xt_cat = torch.randn_like(y[:, nT_cond:])  # shape (1, nT - nT_cond, ...)
-
-        desc_mid = pbar_name or f"Causal {output_lq_start}-{output_lq_end} / {len(lq_reader)}" + (" (last chunk)" if is_last else "")
-        pbar = tqdm(range(num_steps), disable=not verbose, desc=desc_mid)
-        for i in pbar:
-            xt = torch.cat([xt_prev, xt_cat], dim=1)  # full window (nT tiles)
-            t_prev = torch.tensor([t_cond], device=device, dtype=weight_dtype).expand(xt_prev.shape[:-4])
-            t_cat = torch.tensor([ts[i]], device=device, dtype=weight_dtype).expand(xt_cat.shape[:-4])
-            t = torch.cat([t_prev, t_cat], dim=1)
-            vt = model.predict_v(xt, t, y, m)[:, nT_cond:]  # gradient only for cat part
-            xt_cat = xt_cat + vt * (ts[i + 1] - ts[i])
-
-        # Middle region to decode and AR state from its tail (slice后最后 nT_cond 块)
-        xt_mid = xt_cat[:, : nT - 2 * nT_cond]
-        x0_prev = xt_mid[:, -nT_cond:]
-
-        # Decode middle segment (always decode full middle region; crop only after decode for tail).
-        mid_lq_start = nT_cond * tile_min_t
-        mid_lq_end = (nT - nT_cond) * tile_min_t
-        lq_dec = lq[:, :, mid_lq_start:mid_lq_end]
-        msk_dec = msk_t[:, :, mid_lq_start:mid_lq_end]
-
-        xt_dec = rearrange(xt_mid, '1 nt nh nw c t h w -> 1 nt c t (nh h) (nw w)')
-        pred = vae_decode(model.vae, xt_dec, lq=lq_dec, msk=msk_dec)[..., :H, :W]
-        pred_uint8 = rearrange(pred, '1 c t h w -> t c h w').add(1).mul(127.5).clip(0, 255).byte()
-        # If tail, crop decoded frames to actual remaining frames.
-        frames_remaining = mid_end - mid_start
-        if frames_remaining < stride_out:
-            pred_uint8 = pred_uint8[:frames_remaining]
-        yield output_lq, pred_uint8
-
-        produced_t = mid_end
-
 
 def sample_skip_concat(
     lq_reader, # TCHW, uint8 tensor
@@ -444,7 +233,6 @@ def sample_skip_concat(
     pred = vae_decode(model.vae, xt, lq=lq, msk=msk)[..., :H, :W]   
     output_pred = rearrange(pred, '1 c t h w -> t c h w').add(1).mul(127.5).clip(0, 255).byte()
     
-    last_end_idx = output_end
     yield output_lq, output_pred
 
     t0 = (nT - nT_cond) * tile_min_t
@@ -467,8 +255,6 @@ def sample_skip_concat(
 
         output_lq_start = total_msk[ : output_start].sum()
         output_lq_end = total_msk[ : output_end].sum()
-
-        last_end_idx = output_end
 
         msk = total_msk[input_start : input_end]
         lq = lq_reader[input_lq_start : input_lq_end]
@@ -726,7 +512,6 @@ def main(args):
         # Create sampler.
         sampler_map = {
             'skip-concat': sample_skip_concat,
-            'causal': sample_causal,
         }
         sample_fn = sampler_map[args.sampler](
             lq_reader,
