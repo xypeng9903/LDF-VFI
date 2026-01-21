@@ -48,7 +48,7 @@ bash quick_start/generate.sh
 If you want to perform frame interpolation on your own video, modify:
 
 - `data_path`: path to a video file or a folder of videos
-- `temporal_sf`: the temporal scaling factor, currently supports 1 to 16.
+- `temporal_sf`: the temporal scaling factor, currently supports 2 to 16.
 
 **Distributed inference**
 
