@@ -546,7 +546,7 @@ def main(args):
             output_dir = Path(args.output_dir) / lq_path[i].stem
             os.makedirs(output_dir, exist_ok=True)
             lq_uint8 = rearrange(torch.cat(lq_list, dim=0), 't c h w -> t h w c')
-            pred_uint8 = rearrange(torch.cat(pred_list, dim=0), 't c h w -> t h w c')
+            pred_uint8 = rearrange(torch.cat(pred_list, dim=0), 't c h w -> t h w c')[:(lq_uint8.shape[0] - 1) * args.temporal_sf + 1]
             codec_kwargs = {
                 'video_codec': "libx264",
                 'options': {'crf': '10', 'pix_fmt': 'yuv420p'}
