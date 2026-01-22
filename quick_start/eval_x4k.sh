@@ -2,11 +2,8 @@
 #------------------------------
 
 distributed_args="
-    --num_machines=$nnodes
-    --num_processes=$((nnodes * nproc_per_node))
-    --machine_rank=$node_rank
-    --main_process_ip=$master_addr
-    --main_process_port=$master_port
+    --num_machines=1
+    --num_processes=8
 "
 
 model_path="/path/to/LDF-VFI/transformer"
@@ -52,6 +49,10 @@ task_args="
     --save_lq
 "
 
+performance_args="
+    --sp_size=4
+"
+
 mkdir -p $output_dir
 echo "output_dir: $output_dir"
 
@@ -60,6 +61,7 @@ accelerate launch $distributed_args eval_x4k.py \
     $vae_args \
     $generate_args \
     $task_args \
+    $performance_args \
     2>&1 | tee -a $output_dir/log.txt
 
 #------------------------------

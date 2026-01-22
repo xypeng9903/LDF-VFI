@@ -2,8 +2,8 @@
 #------------------------------
 
 distributed_args="
-    --num_machines=$nnodes
-    --num_processes=$((nnodes * nproc_per_node))
+    --num_machines=4
+    --num_processes=32
     --machine_rank=$node_rank
     --main_process_ip=$master_addr
     --main_process_port=$master_port
