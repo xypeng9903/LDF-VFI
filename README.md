@@ -9,7 +9,7 @@ Xinyu Peng*, Han Li*, Yuyang Huang, Ziyang Zheng, Yaoming Wang, Xin Chen, Wenrui
 <p align="center">
   <a href='https://xypeng9903.github.io/ldf-vfi-web/'><img src='https://img.shields.io/badge/Project-Page-Green'></a>
   &nbsp;
-  <a href=''><img src="https://img.shields.io/static/v1?label=Arxiv&message=LDF-VFI(soon)&color=red&logo=arxiv"></a>
+  <a href='http://arxiv.org/abs/2601.14959'><img src="https://img.shields.io/static/v1?label=Arxiv&message=LDF-VFI&color=red&logo=arxiv"></a>
   &nbsp;
   <a href='https://huggingface.co/onecat-ai/LDF-VFI'><img src='https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Model-orange'></a>
 </p>
