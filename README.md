@@ -151,3 +151,17 @@ bash quick_start/train_dit.sh
 
 (Optional) If you run out of GPU memory, you can modify the `performance_args` by either reducing the batch size per GPU (`--batch_gpu`) to 1, 2, or 4, or increasing the sequence parallel size (`--sp_size`) to 2 or 4.
 
+## Citation
+
+If you find this repo helpful, please cite:
+```
+@misc{peng2026holisticmodelingvideoframe,
+      title={Towards Holistic Modeling for Video Frame Interpolation with Auto-regressive Diffusion Transformers}, 
+      author={Xinyu Peng and Han Li and Yuyang Huang and Ziyang Zheng and Yaoming Wang and Xin Chen and Wenrui Dai and Chenglin Li and Junni Zou and Hongkai Xiong},
+      year={2026},
+      eprint={2601.14959},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV},
+      url={https://arxiv.org/abs/2601.14959}, 
+}
+```
