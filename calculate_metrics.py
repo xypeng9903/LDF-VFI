@@ -27,6 +27,7 @@ import argparse
 import json
 import os
 import re
+import sys
 import numpy as np
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -112,11 +113,13 @@ def load_image(path: str, transform, device) -> torch.Tensor:
 #   ignored because there is no future context frame).
 
 
-def compute_image_metrics(cal: CalMetrics, frame_pairs: List[Tuple[str, str]], batch_size: int, transform, accelerator: Accelerator, metrics: List[str], desc: str | None = None) -> Dict[str, float]:
+def compute_image_metrics(cal: CalMetrics, frame_pairs: List[Tuple[str, str, str, str]], batch_size: int, transform, accelerator: Accelerator, metrics: List[str], desc: str | None = None) -> Dict[str, float]:
     device = accelerator.device
     psnr_vals = []
     ssim_vals = []
     lpips_vals = []
+    flolpips_vals = []
+    
     pbar = None
     if accelerator.is_local_main_process:
         pbar = tqdm(total=len(frame_pairs), desc=desc or 'video', leave=False)
@@ -125,11 +128,24 @@ def compute_image_metrics(cal: CalMetrics, frame_pairs: List[Tuple[str, str]], b
         batch = frame_pairs[i:i+batch_size]
         preds = []
         gts = []
-        for p_path, g_path in batch:
+        i0s = []
+        i1s = []
+        has_context = True
+
+        for p_path, g_path, i0_path, i1_path in batch:
             pred = load_image(p_path, transform, device)
             gt = load_image(g_path, transform, device)
             preds.append(pred)
             gts.append(gt)
+            
+            if i0_path and i1_path and 'flolpips' in metrics:
+                i0 = load_image(i0_path, transform, device)
+                i1 = load_image(i1_path, transform, device)
+                i0s.append(i0)
+                i1s.append(i1)
+            else:
+                has_context = False
+
         pred_t = torch.stack(preds, 0)
         gt_t = torch.stack(gts, 0)
         # Range [0,1]
@@ -140,6 +156,12 @@ def compute_image_metrics(cal: CalMetrics, frame_pairs: List[Tuple[str, str]], b
                 ssim_vals.append(cal.cal_ssim(pred_t, gt_t).detach())
             if 'lpips' in metrics:
                 lpips_vals.append(cal.cal_lpips(pred_t, gt_t).detach())
+            if 'flolpips' in metrics:
+                if has_context and len(i0s) == len(preds):
+                    i0_t = torch.stack(i0s, 0)
+                    i1_t = torch.stack(i1s, 0)
+                    flolpips_vals.append(cal.cal_flolpips(pred_t, gt_t, i0_t, i1_t).detach())
+
         if pbar is not None:
             pbar.update(len(batch))
     if pbar is not None:
@@ -172,6 +194,8 @@ def compute_image_metrics(cal: CalMetrics, frame_pairs: List[Tuple[str, str]], b
         out['ssim'] = reduce_metric(ssim_vals)
     if 'lpips' in metrics:
         out['lpips'] = reduce_metric(lpips_vals)
+    if 'flolpips' in metrics:
+        out['flolpips'] = reduce_metric(flolpips_vals)
     return out
 
 
@@ -180,8 +204,12 @@ def collect_frames(dir_path: str, ext: str) -> List[str]:
     return [os.path.join(dir_path, f) for f in files]
 
 
-def match_frames(pred_dir: str, gt_dir: str, ext: str, skip_step: int = 0) -> List[Tuple[str, str]]:
+def match_frames(pred_dir: str, gt_dir: str, ext: str, skip_step: int = 0) -> List[Tuple[str, str, str, str]]:
     """Match prediction frames to GT frames respecting order-based skip semantics.
+
+    Returns list of (pred_path, gt_path, i0_path, i1_path).
+    i0_path and i1_path are the context frames (start and end of the block).
+    If skip_step == 0, i0_path and i1_path will be None.
 
     If skip_step == 0: evaluate all frames that exist in predictions.
     Else: treat frames as an ordered list; define key frames at indices k*S (0-based),
@@ -192,7 +220,7 @@ def match_frames(pred_dir: str, gt_dir: str, ext: str, skip_step: int = 0) -> Li
     pred_frames = collect_frames(pred_dir, ext)
     gt_frames = collect_frames(gt_dir, ext)
     pred_map = {Path(p).name: p for p in pred_frames}
-    pairs: List[Tuple[str, str]] = []
+    pairs: List[Tuple[str, str, str, str]] = []
     missing = 0
     N = len(gt_frames)
 
@@ -203,12 +231,16 @@ def match_frames(pred_dir: str, gt_dir: str, ext: str, skip_step: int = 0) -> Li
             end = b + S
             if end >= N:  # incomplete tail block -> discard entirely
                 break
+            # Context frames
+            i0_path = gt_frames[b]
+            i1_path = gt_frames[end]
+            
             # Intermediate frames in the full block
             for i in range(b + 1, end):
                 g = gt_frames[i]
                 name = Path(g).name
                 if name in pred_map:
-                    pairs.append((pred_map[name], g))
+                    pairs.append((pred_map[name], g, i0_path, i1_path))
                 else:
                     missing += 1
     else:
@@ -216,13 +248,49 @@ def match_frames(pred_dir: str, gt_dir: str, ext: str, skip_step: int = 0) -> Li
         for g in gt_frames:
             name = Path(g).name
             if name in pred_map:
-                pairs.append((pred_map[name], g))
+                pairs.append((pred_map[name], g, None, None))
             else:
                 missing += 1
 
     if missing > 0:
         print(f'[WARN] {missing} frames missing in pred for video {gt_dir}')
     return pairs
+
+
+def compute_vfips(vfips_model, pred_dir: str, gt_dir: str, ext: str, transform, device) -> float:
+    # VFIPS requires 12-frame clips [B, 12, C, H, W]
+    pred_files = collect_frames(pred_dir, ext)
+    gt_files = collect_frames(gt_dir, ext)
+    
+    # Use common length
+    n_frames = min(len(pred_files), len(gt_files))
+    if n_frames < 12:
+        return float('nan')
+    
+    vals = []
+    # Stride 12 as per test_bvivfi_fast.py
+    for start_id in range(0, n_frames - 12 + 1, 12):
+        pred_clip = []
+        gt_clip = []
+        for i in range(12):
+            p = load_image(pred_files[start_id+i], transform, device)
+            g = load_image(gt_files[start_id+i], transform, device)
+            pred_clip.append(p)
+            gt_clip.append(g)
+            
+        # Stack to [1, 12, C, H, W]
+        # load_image returns [C, H, W]
+        pred_t = torch.stack(pred_clip, 0).unsqueeze(0)
+        gt_t = torch.stack(gt_clip, 0).unsqueeze(0)
+        
+        with torch.no_grad():
+            # VFIPS forward(in0, in1) -> expects [B, 12, C, H, W]
+            val = vfips_model(gt_t, pred_t)
+            vals.append(val.item())
+            
+    if vals:
+        return sum(vals) / len(vals)
+    return float('nan')
 
 
 def write_csv(path: str, rows: List[Dict[str, str]], header: List[str]):
@@ -256,6 +324,21 @@ def main():
         resize_transform = T.Compose([T.ToTensor(), T.Resize((h, w))])
     else:
         resize_transform = T.ToTensor()
+
+    # Initialize VFIPS if requested
+    vfips_model = None
+    if 'vfips' in metrics_requested:
+        ckpt_path = os.path.join(os.path.dirname(__file__), 'metrics/VFIPS/exp/eccv_ms_multiscale_v33/model.pytorch')
+        if os.path.exists(ckpt_path):
+            from metrics.VFIPS.networks.lpips_3d import LPIPS_3D_Diff
+            vfips_model = LPIPS_3D_Diff(net='multiscale_v33').to(device)
+            vfips_model.load_state_dict(torch.load(ckpt_path, map_location=device))
+            vfips_model.eval()
+            if accelerator.is_local_main_process:
+                print(f"Loaded VFIPS model from {ckpt_path}")
+        else:
+            print(f"[WARN] VFIPS checkpoint not found at {ckpt_path}")
+            metrics_requested.remove('vfips')
 
     with accelerator.main_process_first():
         mapping = map_pred_video_dirs_flat(args.gt_dir, args.pred_dir)
@@ -300,6 +383,11 @@ def main():
             metrics_requested,
             desc=os.path.basename(gt_dir),
         )
+
+        if vfips_model is not None:
+             v_score = compute_vfips(vfips_model, pred_dir, gt_dir, args.image_ext, resize_transform, device)
+             stats['vfips'] = v_score
+
         row = {'video': os.path.basename(gt_dir)}
         for k, v in stats.items():
             row[k] = v
