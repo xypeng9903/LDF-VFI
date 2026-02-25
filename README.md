@@ -140,7 +140,8 @@ python data_tools.py --src=/path/to/LAVIB --dst=data/lavib-hf
 To start training, run
 
 ```bash
-bash quick_start/train_dit.sh
+bash quick_start/train_dit.sh # for training DiT
+bash quick_start/train_vae.sh # for training VAE
 ```
 
 \* Please modify the following variables in the scripts according to your training environment.
