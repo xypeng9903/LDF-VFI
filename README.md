@@ -1,4 +1,4 @@
-## Towards Holistic Modeling for Video Frame Interpolation with Auto-regressive Diffusion Transformers<br><sub>Official PyTorch implementation</sub>
+## Towards Holistic Modeling for Video Frame Interpolation with Auto-regressive Diffusion Transformers<br><sub>Official PyTorch implementation of the CVPR 2026 paper</sub>
 
 **Towards Holistic Modeling for Video Frame Interpolation with Auto-regressive Diffusion Transformers**<br>
 
