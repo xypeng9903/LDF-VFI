@@ -5,7 +5,7 @@ from pathlib import Path
 def to_hf_dataset(args):              
     def gen():
         for path in Path(args.source).rglob("*"):
-            if path.is_file() and path.suffix.lower() in args.suffix:
+            if path.is_file() and path.suffix.lower() in [".mp4"]:
                 yield {"video": str(path)}
             
     raw_data = datasets.Dataset.from_generator(gen, cache_dir=Path(args.dest) / ".cache")
