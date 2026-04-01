@@ -66,6 +66,7 @@ accelerate launch $distributed_args eval_snu_film.py \
 #------------------------------
 
 accelerate launch $distributed_args calculate_metrics.py \
+    --metrics lpips,flolpips,vfips \
     --pred-dir $output_dir/imgs/pred \
     --gt-dir $output_dir/imgs/gt \
     --skip-step $temporal_sf \
