@@ -1,6 +1,8 @@
 import argparse
 import logging
 import os
+import time
+import json
 from pathlib import Path
 from PIL import Image
 
@@ -41,6 +43,8 @@ def main(args):
             
     if accelerator.is_main_process and args.output_dir is not None:
         os.makedirs(args.output_dir, exist_ok=True)
+        with open(Path(args.output_dir) / 'args.json', 'w') as f:
+            json.dump(vars(args), f, indent=4, ensure_ascii=False)
         
     # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
@@ -136,6 +140,9 @@ def main(args):
     gt_path.extend((data_dir / "test" / "Type1").glob("*"))
     gt_path.extend((data_dir / "test" / "Type2").glob("*"))
     gt_path.extend((data_dir / "test" / "Type3").glob("*"))
+    total_inference_time = 0.0
+    total_interpolated_frames = 0
+    processed_video_counter = 0
 
     def _resize_img(x):
         if args.task == "4k":
@@ -178,6 +185,9 @@ def main(args):
         )
 
         # Generate.
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        start_time = time.time()
         lq_list = []
         pred_list = []
         for j, (lq_uint8, pred_uint8) in enumerate(sample_fn):
@@ -187,8 +197,25 @@ def main(args):
             if args.max_chunks is not None and j + 1 >= args.max_chunks:
                 logger.info(f"Reached max chunks: {args.max_chunks}. Stopping generation.")
                 break     
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        inference_time = time.time() - start_time
+        processed_video_counter += 1
 
         if sp_rank == 0:
+            n_out = sum(t.shape[0] for t in pred_list)
+            n_in = sum(t.shape[0] for t in lq_list)
+            n_interp = n_out - n_in
+
+            if n_interp > 0:
+                msg = f"Seq {gt_path[i].name} | Time: {inference_time:.2f}s | FPS: {n_interp / inference_time:.2f}"
+                if processed_video_counter == 1:
+                    msg += " (Warmup - skipped in avg)"
+                logger.info(msg)
+
+            if processed_video_counter > 1:
+                total_inference_time += inference_time
+                total_interpolated_frames += n_interp
             output_dir = Path(args.output_dir) / gt_path[i].relative_to(data_dir)
             os.makedirs(output_dir, exist_ok=True)
             codec_kwargs = {
@@ -217,6 +244,10 @@ def main(args):
                 Image.fromarray(pred_uint8[j].detach().cpu().numpy()).save(pred_save_dir / fname)
                 Image.fromarray(gt_uint8[j].detach().cpu().numpy()).save(gt_save_dir / fname)
             logger.info(f"Results saved to {output_dir}")
+
+    if sp_rank == 0 and total_interpolated_frames > 0:
+        logger.info(f"Average FPS (skip first): {total_interpolated_frames / total_inference_time:.2f}")
+        logger.info(f"Overall Average Time per Interpolated Frame: {total_inference_time / total_interpolated_frames:.4f}s")
             
     accelerator.end_training()
     

@@ -529,6 +529,10 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrigi
         # flatten dims: (nt nh nw t h w)
         S = nT * T * nH * H * nW * W
         num_chunks = nT * nH * nW
+        
+        # Calculate padding
+        BLOCK_SIZE = 128
+        pad_len = (BLOCK_SIZE - S % BLOCK_SIZE) % BLOCK_SIZE
 
         id_to_chunk = torch.arange(num_chunks, dtype=torch.long, device=device)
         id_to_chunk = id_to_chunk.reshape(nT, nH, nW, 1, 1, 1)
@@ -536,8 +540,15 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrigi
         # Correct flatten order
         id_to_chunk = rearrange(id_to_chunk, 'nt nh nw t h w -> (nt nh nw t h w)')
 
+        # Pad for safety
+        if pad_len > 0:
+            # Pad with -1 or distinct value to avoid accidental matching, though 0 is usually fine if logic holds
+            id_to_chunk_padded = F.pad(id_to_chunk, (0, pad_len), value=-1)
+        else:
+            id_to_chunk_padded = id_to_chunk
+
         def chunk_mask_mod(b, h, q_idx, kv_idx):
-            return id_to_chunk[q_idx] == id_to_chunk[kv_idx]
+            return id_to_chunk_padded[q_idx] == id_to_chunk_padded[kv_idx]
 
         chunk_mask = create_block_mask(chunk_mask_mod, B=None, H=None, Q_LEN=S, KV_LEN=S, _compile=True)
 
@@ -552,9 +563,15 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrigi
             id_to_swin, '(nt t) (nh h) (nw w) -> (nt nh nw t h w)',
             t=T, h=H, w=W
         )
+        
+        # Pad shifted version
+        if pad_len > 0:
+            id_to_swin_padded = F.pad(id_to_swin, (0, pad_len), value=-2)
+        else:
+            id_to_swin_padded = id_to_swin
 
         def swin_mask_mod(b, h, q_idx, kv_idx):
-            return id_to_swin[q_idx] == id_to_swin[kv_idx]
+            return id_to_swin_padded[q_idx] == id_to_swin_padded[kv_idx]
 
         swin_mask = create_block_mask(swin_mask_mod, B=None, H=None, Q_LEN=S, KV_LEN=S, _compile=True)
 
@@ -573,12 +590,21 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrigi
         num_slide_mask=3, single_slide_per_block=True,
     ):
         # flatten dims: (nt nh nw t h w)
+        S = nT * T * nH * H * nW * W 
+        BLOCK_SIZE = 128
+        pad_len = (BLOCK_SIZE - S % BLOCK_SIZE) % BLOCK_SIZE
+
         id_to_nt = torch.arange(nT, device=device).view(-1, 1, 1, 1, 1, 1)
         id_to_nh = torch.arange(nH, device=device).view(1, -1, 1, 1, 1, 1)
         id_to_nw = torch.arange(nW, device=device).view(1, 1, -1, 1, 1, 1)
         id_to_nt = id_to_nt.expand(nT, nH, nW, T, H, W).flatten()
         id_to_nh = id_to_nh.expand(nT, nH, nW, T, H, W).flatten()
         id_to_nw = id_to_nw.expand(nT, nH, nW, T, H, W).flatten()
+        
+        if pad_len > 0:
+            id_to_nt = F.pad(id_to_nt, (0, pad_len))
+            id_to_nh = F.pad(id_to_nh, (0, pad_len))
+            id_to_nw = F.pad(id_to_nw, (0, pad_len))
         
         def sliding_window_mask_mod(b, h, q_idx, kv_idx):
             q_nt, q_nh, q_nw = id_to_nt[q_idx], id_to_nh[q_idx], id_to_nw[q_idx]
@@ -598,7 +624,7 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrigi
                 (q_nw == kv_nw)
             )
         
-        S = nT * T * nH * H * nW * W 
+        # S = nT * T * nH * H * nW * W 
         slide_mask = create_block_mask(sliding_window_mask_mod, B=None, H=None, Q_LEN=S, KV_LEN=S, _compile=True)
         chunk_mask = create_block_mask(chunk_mask_mod, B=None, H=None, Q_LEN=S, KV_LEN=S, _compile=True)
         masks = []

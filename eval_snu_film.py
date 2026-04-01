@@ -1,6 +1,9 @@
 import argparse
 import logging
 import os
+import time
+import json
+import random
 from pathlib import Path
 from PIL import Image
 from concurrent.futures import ThreadPoolExecutor
@@ -38,12 +41,17 @@ logger = get_logger(__name__, log_level="INFO")
 def main(args):
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     dp_size = world_size // args.sp_size
-    accelerator = Accelerator()
+    from accelerate.utils import InitProcessGroupKwargs
+    from datetime import timedelta
+    kwargs = InitProcessGroupKwargs(timeout=timedelta(seconds=3600))
+    accelerator = Accelerator(kwargs_handlers=[kwargs])
     set_seed(args.seed)
     device = accelerator.device
             
     if accelerator.is_main_process and args.output_dir is not None:
         os.makedirs(args.output_dir, exist_ok=True)
+        with open(Path(args.output_dir) / 'args.json', 'w') as f:
+            json.dump(vars(args), f, indent=4, ensure_ascii=False)
         
     # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
@@ -139,6 +147,10 @@ def main(args):
     lq_path = []
     lq_path.extend((data_dir / "test" / "GOPRO_test").glob("*"))
     lq_path.extend((data_dir / "test" / "YouTube_test").glob("*"))
+    lq_path.sort()
+    random.Random(args.seed).shuffle(lq_path)
+    total_inference_time = 0.0
+    total_interpolated_frames = 0
     
     for i in tqdm(
         range(dp_rank, len(lq_path), dp_size), desc="Total progress", disable=(sp_rank != 0)
@@ -174,6 +186,7 @@ def main(args):
         # Generate.
         lq_list = []
         pred_list = []
+        start_time = time.time()
         for j, (lq_uint8, pred_uint8) in enumerate(sample_fn):
             if sp_rank == 0:
                 lq_list.append(lq_uint8.detach().cpu())
@@ -181,9 +194,18 @@ def main(args):
             if args.max_chunks is not None and j + 1 >= args.max_chunks:
                 logger.info(f"Reached max chunks: {args.max_chunks}. Stopping generation.")
                 break
+        end_time = time.time()
             
         # Save results.
         if sp_rank == 0:
+            inference_time = end_time - start_time
+            n_out = sum(t.shape[0] for t in pred_list)
+            n_in = sum(t.shape[0] for t in lq_list)
+            n_interp = n_out - n_in
+            total_inference_time += inference_time
+            total_interpolated_frames += n_interp
+            if n_interp > 0:
+                logger.info(f"Time per interp frame: {inference_time / n_interp:.4f}s ({inference_time:.2f}s / {n_interp} frames)")
             output_dir = Path(args.output_dir) / lq_path[i].relative_to(data_dir)
             os.makedirs(output_dir, exist_ok=True)
             codec_kwargs = {
@@ -230,7 +252,11 @@ def main(args):
             with ThreadPoolExecutor() as executor:
                 executor.map(save_image_pair, enumerate(gt_files))
             logger.info(f"Results saved to {output_dir}")
+
+    if sp_rank == 0 and total_interpolated_frames > 0:
+        logger.info(f"Overall Average Time per Interpolated Frame: {total_inference_time / total_interpolated_frames:.4f}s")
             
+    accelerator.wait_for_everyone()
     accelerator.end_training()
     
 #----------------------------------------------------------------------------
