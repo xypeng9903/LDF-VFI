@@ -2,7 +2,6 @@
 #------------------------------
 
 distributed_args="
-    --config_file=configs/ddp.yaml
     --num_machines=4
     --num_processes=32
     --machine_rank=$node_rank
@@ -55,7 +54,7 @@ performance_args="
 
 mkdir -p $output_dir
 echo "output_dir: $output_dir"
-accelerate launch --mixed_precision='bf16' $distributed_args \
+accelerate launch --config_file=configs/ddp.yaml $distributed_args \
     train_vae.py \
     --output_dir=$output_dir \
     $vae_args \
