@@ -2,6 +2,7 @@
 #------------------------------
 
 distributed_args="
+    --config_file=configs/ddp.yaml
     --num_machines=4
     --num_processes=32
     --machine_rank=$node_rank
@@ -18,6 +19,7 @@ output_dir="runs/train_vae"
 
 vae_args="
     --vae_path=$vae_path
+    --vae_type=wan2_1_cond_v2
     --temporal_upsample=nearest
     --freeze_encoder
     --disc_start=5001
@@ -53,7 +55,7 @@ performance_args="
 
 mkdir -p $output_dir
 echo "output_dir: $output_dir"
-accelerate launch --config_file="configs/zero1.yaml" --mixed_precision='bf16' $distributed_args \
+accelerate launch --mixed_precision='bf16' $distributed_args \
     train_vae.py \
     --output_dir=$output_dir \
     $vae_args \
